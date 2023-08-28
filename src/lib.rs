@@ -10,7 +10,10 @@
 //! or decrypted.
 #![deny(warnings, missing_docs, dead_code)]
 
+extern crate core;
+
 use chacha20poly1305::{aead::AeadInPlace, Key, KeyInit, XChaCha20Poly1305, XNonce};
+use group::{ff::PrimeField, GroupEncoding};
 use rand::RngCore;
 use zeroize::Zeroize;
 
@@ -59,15 +62,77 @@ impl<const B: usize> Protected<B> {
         protected
     }
 
+    /// Create a new protected memory value from a field element
+    pub fn field_element<F: PrimeField>(secret: F) -> Self {
+        Self::new(secret.to_repr().as_ref())
+    }
+
+    /// Create a new protected memory value from a group element
+    pub fn group_element<G: GroupEncoding>(secret: G) -> Self {
+        Self::new(secret.to_bytes().as_ref())
+    }
+
     /// Create a new protected memory value from a string slice
-    pub fn str_into<A: AsRef<str>>(secret: A) -> Self {
+    pub fn str<A: AsRef<str>>(secret: A) -> Self {
         Self::new(secret.as_ref().as_bytes())
+    }
+
+    /// Create a new protected memory value from a u8
+    pub fn u8(input: u8) -> Self {
+        Self::new([input])
+    }
+
+    /// Create a new protected memory value from a i8
+    pub fn i8(input: i8) -> Self {
+        Self::new([input as u8])
+    }
+
+    /// Create a new protected memory value from a u16
+    pub fn u16(input: u16) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    /// Create a new protected memory value from a i16
+    pub fn i16(input: i16) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    /// Create a new protected memory value from a u32
+    pub fn u32(input: u32) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    /// Create a new protected memory value from a i32
+    pub fn i32(input: i32) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    /// Create a new protected memory value from a u64
+    pub fn u64(input: u64) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    /// Create a new protected memory value from a i64
+    pub fn i64(input: i64) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    /// Create a new protected memory value from a u128
+    pub fn u128(input: u128) -> Self {
+        Self::new(input.to_be_bytes())
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    /// Create a new protected memory value from a i128
+    pub fn i128(input: i128) -> Self {
+        Self::new(input.to_be_bytes())
     }
 
     #[cfg(feature = "serde")]
     /// Serialize a secret into protected memory
-    pub fn serde_into<T: serde::Serialize>(secret: &T) -> Result<Self, Box<dyn std::error::Error>> {
-        let s = serde_bare::to_vec(secret).map_err(|e| Box::new(e))?;
+    pub fn serde<T: serde::Serialize>(secret: &T) -> Result<Self, Box<dyn std::error::Error>> {
+        let s = serde_bare::to_vec(secret).map_err(|e| string_error::into_err(e.to_string()))?;
         Ok(Self::new(s.as_slice()))
     }
 
@@ -131,29 +196,27 @@ pub struct Unprotected<'a, const B: usize = DEFAULT_BUF_SIZE> {
     protected: &'a mut Protected<B>,
 }
 
-macro_rules! int_impl {
-    ($($name_be:ident:$name_le:ident => $type:tt:$size:expr),+$(,)*) => {
-        $(
-            /// Return the protected secret as a $type from big endian bytes
-            pub fn $name_be(&self) -> $type {
-                $type::from_be_bytes(<[u8; $size]>::try_from(self.as_ref()).unwrap())
-            }
-
-            /// Return the protected secret as a $type from little endian bytes
-            pub fn $name_le(&self) -> $type {
-                $type::from_le_bytes(<[u8; $size]>::try_from(self.as_ref()).unwrap())
-            }
-        )+
-    };
-}
-
 impl<'a, const B: usize> Unprotected<'a, B> {
     #[cfg(feature = "serde")]
     /// Deserialize a secret
-    pub fn deserialize_from<T: serde::de::DeserializeOwned>(
-        &self,
-    ) -> Result<T, Box<dyn std::error::Error>> {
+    pub fn serde<T: serde::de::DeserializeOwned>(&self) -> Result<T, Box<dyn std::error::Error>> {
         Ok(serde_bare::from_slice::<T>(self.as_ref()).map_err(|e| Box::new(e))?)
+    }
+
+    /// Convert the secret into a field element
+    pub fn field_element<F: PrimeField>(&self) -> Result<F, Box<dyn std::error::Error>> {
+        let mut repr = F::Repr::default();
+        repr.as_mut().copy_from_slice(self.as_ref());
+        Option::<F>::from(F::from_repr(repr))
+            .ok_or(string_error::static_err("invalid field element"))
+    }
+
+    /// Convert the secret into a group element
+    pub fn group_element<G: GroupEncoding>(&self) -> Result<G, Box<dyn std::error::Error>> {
+        let mut repr = G::Repr::default();
+        repr.as_mut().copy_from_slice(self.as_ref());
+        Option::<G>::from(G::from_bytes(&repr))
+            .ok_or(string_error::static_err("invalid group element"))
     }
 
     /// Return the protected secret as a string slice
@@ -166,37 +229,51 @@ impl<'a, const B: usize> Unprotected<'a, B> {
         self.as_ref()[0]
     }
 
-    int_impl!(
-        u16_be:u16_le => u16:2,
-        i16_be:i16_le => i16:2,
-        u32_be:u32_le => u32:4,
-        i32_be:i32_le => i32:4,
-        u64_be:u64_le => u64:8,
-        i64_be:i64_le => i64:8,
-    );
+    /// Return the protected secret as a single byte
+    pub fn i8(&self) -> i8 {
+        self.as_ref()[0] as i8
+    }
+
+    /// Return the protected secret as a single byte
+    pub fn u16(&self) -> u16 {
+        u16::from_be_bytes(<[u8; 2]>::try_from(self.as_ref()).unwrap())
+    }
+
+    /// Return the protected secret as a single byte
+    pub fn i16(&self) -> i16 {
+        i16::from_be_bytes(<[u8; 2]>::try_from(self.as_ref()).unwrap())
+    }
+
+    /// Return the protected secret as a single byte
+    pub fn u32(&self) -> u32 {
+        u32::from_be_bytes(<[u8; 4]>::try_from(self.as_ref()).unwrap())
+    }
+
+    /// Return the protected secret as a single byte
+    pub fn i32(&self) -> i32 {
+        i32::from_be_bytes(<[u8; 4]>::try_from(self.as_ref()).unwrap())
+    }
+
+    /// Return the protected secret as a single byte
+    pub fn u64(&self) -> u64 {
+        u64::from_be_bytes(<[u8; 8]>::try_from(self.as_ref()).unwrap())
+    }
+
+    /// Return the protected secret as a single byte
+    pub fn i64(&self) -> i64 {
+        i64::from_be_bytes(<[u8; 8]>::try_from(self.as_ref()).unwrap())
+    }
 
     #[cfg(target_pointer_width = "64")]
     /// Return the protected secret as a 128-bit unsigned integer from little endian bytes
-    pub fn u128_be(&self) -> u128 {
+    pub fn u128(&self) -> u128 {
         u128::from_be_bytes(<[u8; 16]>::try_from(self.as_ref()).unwrap())
     }
 
     #[cfg(target_pointer_width = "64")]
     /// Return the protected secret as a 128-bit unsigned integer from little endian bytes
-    pub fn u128_le(&self) -> u128 {
-        u128::from_le_bytes(<[u8; 16]>::try_from(self.as_ref()).unwrap())
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    /// Return the protected secret as a 128-bit unsigned integer from little endian bytes
-    pub fn i128_be(&self) -> i128 {
+    pub fn i128(&self) -> i128 {
         i128::from_be_bytes(<[u8; 16]>::try_from(self.as_ref()).unwrap())
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    /// Return the protected secret as a 128-bit unsigned integer from little endian bytes
-    pub fn i128_le(&self) -> i128 {
-        i128::from_le_bytes(<[u8; 16]>::try_from(self.as_ref()).unwrap())
     }
 }
 
@@ -219,7 +296,7 @@ impl<'a, const B: usize> Drop for Unprotected<'a, B> {
 }
 
 #[test]
-fn protect_test() {
+fn protect_slice() {
     let password = b"letmeinplease!";
     let mut p = Protected::new(&password[..]);
     assert_ne!(p.value, password);
@@ -230,4 +307,166 @@ fn protect_test() {
     let password2 = p.unprotect();
     assert!(password2.is_some());
     assert_eq!(password2.unwrap().as_ref(), password.as_slice());
+}
+
+#[test]
+fn protected_integers() {
+    let mut p: Protected<256> = Protected::u8(8);
+    assert_eq!(p.unprotect().unwrap().u8(), 8);
+    p = Protected::i8(9);
+    assert_eq!(p.unprotect().unwrap().i8(), 9);
+    p = Protected::u16(80);
+    assert_eq!(p.unprotect().unwrap().u16(), 80);
+    p = Protected::i16(90);
+    assert_eq!(p.unprotect().unwrap().i16(), 90);
+    p = Protected::u32(800);
+    assert_eq!(p.unprotect().unwrap().u32(), 800);
+    p = Protected::i32(900);
+    assert_eq!(p.unprotect().unwrap().i32(), 900);
+    p = Protected::u64(8000);
+    assert_eq!(p.unprotect().unwrap().u64(), 8000);
+    p = Protected::i64(9000);
+    assert_eq!(p.unprotect().unwrap().i64(), 9000);
+    p = Protected::u128(80000);
+    assert_eq!(p.unprotect().unwrap().u128(), 80000);
+    p = Protected::i128(90000);
+    assert_eq!(p.unprotect().unwrap().i128(), 90000);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn protect_serde() {
+    #[derive(Debug, Eq, PartialEq)]
+    struct Data {
+        one: Vec<u8>,
+        two: Vec<u8>,
+    }
+
+    impl serde::Serialize for Data {
+        fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let mut output = Vec::with_capacity(self.one.len() + self.two.len() + 8);
+            output.extend_from_slice(&(self.one.len() as u32).to_be_bytes());
+            output.extend_from_slice(self.one.as_slice());
+            output.extend_from_slice(&(self.two.len() as u32).to_be_bytes());
+            output.extend_from_slice(self.two.as_slice());
+            output.serialize(s)
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for Data {
+        fn deserialize<D>(d: D) -> Result<Self, D::Error>
+        where
+            D: serde::de::Deserializer<'de>,
+        {
+            struct DataVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for DataVisitor {
+                type Value = Data;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    write!(formatter, "a byte sequence")
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: serde::de::SeqAccess<'de>,
+                {
+                    let mut len = [0u8; 4];
+                    len[0] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                    len[1] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                    len[2] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
+                    len[3] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?;
+                    let mut arr_len = u32::from_be_bytes(len) as usize;
+                    let mut one = Vec::with_capacity(arr_len);
+                    for i in 0..arr_len {
+                        one.push(
+                            seq.next_element()?
+                                .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?,
+                        );
+                    }
+
+                    len[0] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(arr_len + 4, &self))?;
+                    len[1] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(arr_len + 5, &self))?;
+                    len[2] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(arr_len + 6, &self))?;
+                    len[3] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(arr_len + 7, &self))?;
+                    arr_len = u32::from_be_bytes(len) as usize;
+                    let mut two = Vec::with_capacity(arr_len);
+                    for i in 0..arr_len {
+                        two.push(
+                            seq.next_element()?
+                                .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?,
+                        );
+                    }
+
+                    Ok(Data { one, two })
+                }
+            }
+
+            d.deserialize_seq(DataVisitor)
+        }
+    }
+
+    let tt = Data {
+        one: vec![1u8; 16],
+        two: vec![2u8; 32],
+    };
+
+    let p = Protected::<DEFAULT_BUF_SIZE>::serde(&tt);
+    assert!(p.is_ok());
+    let mut p = p.unwrap();
+    let u = p.unprotect().unwrap();
+    let dd = u.serde::<Data>();
+    assert!(dd.is_ok());
+    let dd = dd.unwrap();
+    assert_eq!(dd, tt);
+}
+
+#[test]
+fn protect_str() {
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::str("letmeinplease");
+    let u = p.unprotect().unwrap();
+    assert_eq!(u.str(), "letmeinplease");
+}
+
+#[test]
+fn protect_elements() {
+    use group::ff::Field;
+
+    let sk = k256::Scalar::random(&mut rand::rngs::OsRng);
+    let pk = k256::ProjectivePoint::GENERATOR * sk;
+
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::field_element(sk);
+    {
+        let u = p.unprotect().unwrap();
+        let ss = u.field_element::<k256::Scalar>();
+        assert!(ss.is_ok());
+        let ss = ss.unwrap();
+        assert_eq!(ss, sk);
+    }
+
+    p = Protected::group_element(pk);
+    let u = p.unprotect().unwrap();
+    let gg = u.group_element::<k256::ProjectivePoint>();
+    assert!(gg.is_ok());
+    let gg = gg.unwrap();
+    assert_eq!(gg, pk);
 }
