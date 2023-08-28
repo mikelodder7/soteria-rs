@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 name = "soteria-rs"
 readme = "README.md"
 repository = "https://github.com/cryptidtech/protected"
-version = "0.1.0"
+version = "0.1.1"
 
 [features]
 default = []

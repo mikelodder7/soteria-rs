@@ -66,7 +66,7 @@ impl<const B: usize> Protected<B> {
 
     #[cfg(feature = "serde")]
     /// Serialize a secret into protected memory
-    pub fn serde_into<T: serde::Serialize>(secret: &T) -> Result<Self, Box<dyn serde::ser::Error>> {
+    pub fn serde_into<T: serde::Serialize>(secret: &T) -> Result<Self, Box<dyn std::error::Error>> {
         let s = serde_bare::to_vec(secret).map_err(|e| Box::new(e))?;
         Ok(Self::new(s.as_slice()))
     }
@@ -150,10 +150,10 @@ macro_rules! int_impl {
 impl<'a, const B: usize> Unprotected<'a, B> {
     #[cfg(feature = "serde")]
     /// Deserialize a secret
-    pub fn deserialize_from<'de, D: serde::Deserialize<'de>>(
+    pub fn deserialize_from<T: serde::de::DeserializeOwned>(
         &self,
-    ) -> Result<T, Box<dyn D::Error>> {
-        serde_bare::from_slice::<T>(self.as_ref()).map_err(|e| Box::new(e))
+    ) -> Result<T, Box<dyn std::error::Error>> {
+        Ok(serde_bare::from_slice::<T>(self.as_ref()).map_err(|e| Box::new(e))?)
     }
 
     /// Return the protected secret as a string slice
