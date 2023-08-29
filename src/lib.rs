@@ -97,24 +97,28 @@ impl<const B: usize> Protected<B> {
     }
 
     #[cfg(feature = "elements")]
+    #[cfg_attr(docrs, doc(cfg(feature = "elements")))]
     /// Create a new protected memory value from a field element
     pub fn field_element<F: group::ff::PrimeField>(secret: F) -> Self {
         Self::new(secret.to_repr().as_ref())
     }
 
     #[cfg(feature = "elements")]
+    #[cfg_attr(docrs, doc(cfg(feature = "elements")))]
     /// Create a new protected memory value from a group element
     pub fn group_element<G: group::GroupEncoding>(secret: G) -> Self {
         Self::new(secret.to_bytes().as_ref())
     }
 
     #[cfg(feature = "secret-key")]
+    #[cfg_attr(docrs, doc(cfg(feature = "secret-key")))]
     /// Create a new protected memory value from a secret key
     pub fn secret_key<C: elliptic_curve::Curve>(key: &elliptic_curve::SecretKey<C>) -> Self {
         Self::new(key.to_bytes())
     }
 
     #[cfg(feature = "signing")]
+    #[cfg_attr(docrs, doc(cfg(feature = "signing")))]
     /// Create a new protected memory value from a signing key
     pub fn signing_key<C>(key: &ecdsa::SigningKey<C>) -> Self
     where
@@ -127,18 +131,21 @@ impl<const B: usize> Protected<B> {
     }
 
     #[cfg(feature = "bls")]
+    #[cfg_attr(docrs, doc(cfg(feature = "bls")))]
     /// Create a new protected memory value from a bls secret key
     pub fn bls_secret_key<C: blsful::BlsSignatureImpl>(key: &blsful::SecretKey<C>) -> Self {
         Self::new(key.to_be_bytes())
     }
 
     #[cfg(feature = "ed25519")]
+    #[cfg_attr(docrs, doc(cfg(feature = "ed25519")))]
     /// Create a new protected memory value from a ed25519 signing key
     pub fn ed25519(key: &ed25519_dalek::SigningKey) -> Self {
         Self::new(key.to_bytes())
     }
 
     #[cfg(feature = "x25519")]
+    #[cfg_attr(docrs, doc(cfg(feature = "x25519")))]
     /// Create a new protected memory value from a x25519 key
     pub fn x25519(key: &x25519_dalek::StaticSecret) -> Self {
         Self::new(key.to_bytes())
@@ -202,6 +209,7 @@ impl<const B: usize> Protected<B> {
     }
 
     #[cfg(feature = "serde")]
+    #[cfg_attr(docrs, doc(cfg(feature = "serde")))]
     /// Serialize a secret into protected memory
     pub fn serde<T: serde::Serialize>(secret: &T) -> Result<Self, Box<dyn std::error::Error>> {
         let s = serde_bare::to_vec(secret).map_err(|e| string_error::into_err(e.to_string()))?;
@@ -282,12 +290,14 @@ impl<'a, const B: usize> Drop for Unprotected<'a, B> {
 
 impl<'a, const B: usize> Unprotected<'a, B> {
     #[cfg(feature = "serde")]
+    #[cfg_attr(docrs, doc(cfg(feature = "serde")))]
     /// Deserialize a secret
     pub fn serde<T: serde::de::DeserializeOwned>(&self) -> Result<T, Box<dyn std::error::Error>> {
         Ok(serde_bare::from_slice::<T>(self.as_ref()).map_err(Box::new)?)
     }
 
     #[cfg(feature = "elements")]
+    #[cfg_attr(docrs, doc(cfg(feature = "elements")))]
     /// Convert the secret into a field element
     pub fn field_element<F: group::ff::PrimeField>(&self) -> Result<F, Box<dyn std::error::Error>> {
         let mut repr = F::Repr::default();
@@ -297,6 +307,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     }
 
     #[cfg(feature = "elements")]
+    #[cfg_attr(docrs, doc(cfg(feature = "elements")))]
     /// Convert the secret into a group element
     pub fn group_element<G: group::GroupEncoding>(&self) -> Result<G, Box<dyn std::error::Error>> {
         let mut repr = G::Repr::default();
@@ -306,6 +317,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     }
 
     #[cfg(feature = "secret-key")]
+    #[cfg_attr(docrs, doc(cfg(feature = "secret-key")))]
     /// Convert the secret to a secret key
     pub fn secret_key<C: elliptic_curve::Curve>(
         &self,
@@ -315,6 +327,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     }
 
     #[cfg(feature = "signing")]
+    #[cfg_attr(docrs, doc(cfg(feature = "signing")))]
     /// Convert the secret to a signing key
     pub fn signing_key<C>(&self) -> Result<ecdsa::SigningKey<C>, Box<dyn std::error::Error>>
     where
@@ -328,6 +341,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     }
 
     #[cfg(feature = "bls")]
+    #[cfg_attr(docrs, doc(cfg(feature = "bls")))]
     /// Convert the secret to a bls secret key
     pub fn bls_secret_key<C: blsful::BlsSignatureImpl>(
         &self,
@@ -340,6 +354,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     }
 
     #[cfg(feature = "ed25519")]
+    #[cfg_attr(docrs, doc(cfg(feature = "ed25519")))]
     /// Convert the secret to an ed25519 signing key
     pub fn ed25519(&self) -> Result<ed25519_dalek::SigningKey, Box<dyn std::error::Error>> {
         Ok(ed25519_dalek::SigningKey::from_bytes(
@@ -349,6 +364,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     }
 
     #[cfg(feature = "x25519")]
+    #[cfg_attr(docrs, doc(cfg(feature = "x25519")))]
     /// Convert the secret to a x25519 key
     pub fn x25519(&self) -> Result<x25519_dalek::StaticSecret, Box<dyn std::error::Error>> {
         Ok(x25519_dalek::StaticSecret::from(
