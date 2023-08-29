@@ -10,10 +10,7 @@
 //! or decrypted.
 #![deny(warnings, missing_docs, dead_code)]
 
-extern crate core;
-
 use chacha20poly1305::{aead::AeadInPlace, Key, KeyInit, XChaCha20Poly1305, XNonce};
-use group::{ff::PrimeField, GroupEncoding};
 use rand::RngCore;
 use zeroize::Zeroize;
 
@@ -29,8 +26,26 @@ pub const DEFAULT_BUF_SIZE: usize = 16 * 1024;
 ///
 /// The prekey random nonce are hashed using merlin transcripts to construct the
 /// sealing key and encryption nonce.
-/// Standard traits are intentionally not implemented to avoid memory copies like
+/// Standard traits are intentionally not implemented or
+/// minimally implemented to avoid memory copies like
 /// [`Copy`], [`Clone`], [`Debug`], [`ToString`].
+///
+/// Serialization is not implemented via `serde`
+/// and be warned, serialization takes the value out of protected
+/// memory. Serialization is usually meant for persistence and thus
+/// memory protections do not apply. Other options like disk encryption
+/// or file encryption should be used.
+/// This is done deliberately to limit accidental exfiltration of secrets
+/// with `serde`.
+///
+/// If serialization is still desirable, please use the
+/// [`serialize_with`][1] attribute to specify a serializer.
+///
+/// The easiest method for this is to call `unprotect`().as_ref(). However
+/// since `unprotect` requires `self` to be mutable, [`RefCell`] will probably
+/// need to be used.
+///
+/// [1]: https://serde.rs/field-attrs.html#serialize_with
 pub struct Protected<const B: usize = DEFAULT_BUF_SIZE> {
     /// The key for protecting the value
     pre_key: [u8; B],
@@ -50,6 +65,25 @@ impl<const B: usize> Default for Protected<B> {
     }
 }
 
+impl<const B: usize> Drop for Protected<B> {
+    fn drop(&mut self) {
+        self.pre_key.zeroize();
+        self.nonce.zeroize();
+    }
+}
+
+impl<const B: usize> std::fmt::Debug for Protected<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Protected<{}>", B)
+    }
+}
+
+impl<const B: usize> std::fmt::Display for Protected<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Protected<{}>", B)
+    }
+}
+
 impl<const B: usize> Protected<B> {
     /// Create a new protected memory value
     pub fn new<A: AsRef<[u8]>>(secret: A) -> Self {
@@ -62,14 +96,52 @@ impl<const B: usize> Protected<B> {
         protected
     }
 
+    #[cfg(feature = "elements")]
     /// Create a new protected memory value from a field element
-    pub fn field_element<F: PrimeField>(secret: F) -> Self {
+    pub fn field_element<F: group::ff::PrimeField>(secret: F) -> Self {
         Self::new(secret.to_repr().as_ref())
     }
 
+    #[cfg(feature = "elements")]
     /// Create a new protected memory value from a group element
-    pub fn group_element<G: GroupEncoding>(secret: G) -> Self {
+    pub fn group_element<G: group::GroupEncoding>(secret: G) -> Self {
         Self::new(secret.to_bytes().as_ref())
+    }
+
+    #[cfg(feature = "secret-key")]
+    /// Create a new protected memory value from a secret key
+    pub fn secret_key<C: elliptic_curve::Curve>(key: &elliptic_curve::SecretKey<C>) -> Self {
+        Self::new(key.to_bytes())
+    }
+
+    #[cfg(feature = "signing")]
+    /// Create a new protected memory value from a signing key
+    pub fn signing_key<C>(key: &ecdsa::SigningKey<C>) -> Self
+    where
+        C: ecdsa::PrimeCurve + elliptic_curve::CurveArithmetic,
+        elliptic_curve::Scalar<C>: elliptic_curve::ops::Invert<Output = subtle::CtOption<elliptic_curve::Scalar<C>>>
+            + ecdsa::hazmat::SignPrimitive<C>,
+        ecdsa::SignatureSize<C>: elliptic_curve::generic_array::ArrayLength<u8>,
+    {
+        Self::new(key.to_bytes())
+    }
+
+    #[cfg(feature = "bls")]
+    /// Create a new protected memory value from a bls secret key
+    pub fn bls_secret_key<C: blsful::BlsSignatureImpl>(key: &blsful::SecretKey<C>) -> Self {
+        Self::new(key.to_be_bytes())
+    }
+
+    #[cfg(feature = "ed25519")]
+    /// Create a new protected memory value from a ed25519 signing key
+    pub fn ed25519(key: &ed25519_dalek::SigningKey) -> Self {
+        Self::new(key.to_bytes())
+    }
+
+    #[cfg(feature = "x25519")]
+    /// Create a new protected memory value from a x25519 key
+    pub fn x25519(key: &x25519_dalek::StaticSecret) -> Self {
+        Self::new(key.to_bytes())
     }
 
     /// Create a new protected memory value from a string slice
@@ -157,7 +229,8 @@ impl<const B: usize> Protected<B> {
         output.zeroize();
     }
 
-    /// Unprotect memory value
+    /// Unprotect memory value. If the value has been tampered, [`None`] is returned.
+    /// Otherwise the value is decrypted and return via [`Some`]
     pub fn unprotect(&mut self) -> Option<Unprotected<'_, B>> {
         let mut transcript = merlin::Transcript::new(b"protect memory region");
         transcript.append_message(b"pre_key", &self.pre_key);
@@ -182,13 +255,6 @@ impl<const B: usize> Protected<B> {
     }
 }
 
-impl<const B: usize> Drop for Protected<B> {
-    fn drop(&mut self) {
-        self.pre_key.zeroize();
-        self.nonce.zeroize();
-    }
-}
-
 /// Unprotected contains the decrypted value.
 /// After Unprotected is dropped, the `Protected` is reengaged
 /// with new cryptographic material and the value is encrypted again
@@ -196,32 +262,104 @@ pub struct Unprotected<'a, const B: usize = DEFAULT_BUF_SIZE> {
     protected: &'a mut Protected<B>,
 }
 
+impl<'a, const B: usize> AsRef<[u8]> for Unprotected<'a, B> {
+    fn as_ref(&self) -> &[u8] {
+        self.protected.value.as_slice()
+    }
+}
+
+impl<'a, const B: usize> AsMut<[u8]> for Unprotected<'a, B> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.protected.value.as_mut()
+    }
+}
+
+impl<'a, const B: usize> Drop for Unprotected<'a, B> {
+    fn drop(&mut self) {
+        self.protected.protect();
+    }
+}
+
 impl<'a, const B: usize> Unprotected<'a, B> {
     #[cfg(feature = "serde")]
     /// Deserialize a secret
     pub fn serde<T: serde::de::DeserializeOwned>(&self) -> Result<T, Box<dyn std::error::Error>> {
-        Ok(serde_bare::from_slice::<T>(self.as_ref()).map_err(|e| Box::new(e))?)
+        Ok(serde_bare::from_slice::<T>(self.as_ref()).map_err(Box::new)?)
     }
 
+    #[cfg(feature = "elements")]
     /// Convert the secret into a field element
-    pub fn field_element<F: PrimeField>(&self) -> Result<F, Box<dyn std::error::Error>> {
+    pub fn field_element<F: group::ff::PrimeField>(&self) -> Result<F, Box<dyn std::error::Error>> {
         let mut repr = F::Repr::default();
         repr.as_mut().copy_from_slice(self.as_ref());
         Option::<F>::from(F::from_repr(repr))
             .ok_or(string_error::static_err("invalid field element"))
     }
 
+    #[cfg(feature = "elements")]
     /// Convert the secret into a group element
-    pub fn group_element<G: GroupEncoding>(&self) -> Result<G, Box<dyn std::error::Error>> {
+    pub fn group_element<G: group::GroupEncoding>(&self) -> Result<G, Box<dyn std::error::Error>> {
         let mut repr = G::Repr::default();
         repr.as_mut().copy_from_slice(self.as_ref());
         Option::<G>::from(G::from_bytes(&repr))
             .ok_or(string_error::static_err("invalid group element"))
     }
 
+    #[cfg(feature = "secret-key")]
+    /// Convert the secret to a secret key
+    pub fn secret_key<C: elliptic_curve::Curve>(
+        &self,
+    ) -> Result<elliptic_curve::SecretKey<C>, Box<dyn std::error::Error>> {
+        elliptic_curve::SecretKey::from_slice(self.as_ref())
+            .map_err(|e| string_error::into_err(e.to_string()))
+    }
+
+    #[cfg(feature = "signing")]
+    /// Convert the secret to a signing key
+    pub fn signing_key<C>(&self) -> Result<ecdsa::SigningKey<C>, Box<dyn std::error::Error>>
+    where
+        C: ecdsa::PrimeCurve + elliptic_curve::CurveArithmetic,
+        elliptic_curve::Scalar<C>: elliptic_curve::ops::Invert<Output = subtle::CtOption<elliptic_curve::Scalar<C>>>
+            + ecdsa::hazmat::SignPrimitive<C>,
+        ecdsa::SignatureSize<C>: elliptic_curve::generic_array::ArrayLength<u8>,
+    {
+        ecdsa::SigningKey::from_slice(self.as_ref())
+            .map_err(|e| string_error::into_err(e.to_string()))
+    }
+
+    #[cfg(feature = "bls")]
+    /// Convert the secret to a bls secret key
+    pub fn bls_secret_key<C: blsful::BlsSignatureImpl>(
+        &self,
+    ) -> Result<blsful::SecretKey<C>, Box<dyn std::error::Error>> {
+        Option::from(blsful::SecretKey::<C>::from_be_bytes(
+            &<[u8; 32]>::try_from(self.as_ref())
+                .map_err(|_| string_error::static_err("invalid bls secret key"))?,
+        ))
+        .ok_or_else(|| string_error::static_err("invalid bls secret key"))
+    }
+
+    #[cfg(feature = "ed25519")]
+    /// Convert the secret to an ed25519 signing key
+    pub fn ed25519(&self) -> Result<ed25519_dalek::SigningKey, Box<dyn std::error::Error>> {
+        Ok(ed25519_dalek::SigningKey::from_bytes(
+            &<[u8; 32]>::try_from(self.as_ref())
+                .map_err(|_| string_error::static_err("invalid ed25519 signing key"))?,
+        ))
+    }
+
+    #[cfg(feature = "x25519")]
+    /// Convert the secret to a x25519 key
+    pub fn x25519(&self) -> Result<x25519_dalek::StaticSecret, Box<dyn std::error::Error>> {
+        Ok(x25519_dalek::StaticSecret::from(
+            <[u8; 32]>::try_from(self.as_ref())
+                .map_err(|_| string_error::static_err("invalid x25519 key"))?,
+        ))
+    }
+
     /// Return the protected secret as a string slice
     pub fn str(&self) -> &str {
-        unsafe { core::str::from_utf8_unchecked(self.as_ref()) }
+        unsafe { std::str::from_utf8_unchecked(self.as_ref()) }
     }
 
     /// Return the protected secret as a single byte
@@ -274,24 +412,6 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     /// Return the protected secret as a 128-bit unsigned integer from little endian bytes
     pub fn i128(&self) -> i128 {
         i128::from_be_bytes(<[u8; 16]>::try_from(self.as_ref()).unwrap())
-    }
-}
-
-impl<'a, const B: usize> AsRef<[u8]> for Unprotected<'a, B> {
-    fn as_ref(&self) -> &[u8] {
-        self.protected.value.as_slice()
-    }
-}
-
-impl<'a, const B: usize> AsMut<[u8]> for Unprotected<'a, B> {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.protected.value.as_mut()
-    }
-}
-
-impl<'a, const B: usize> Drop for Unprotected<'a, B> {
-    fn drop(&mut self) {
-        self.protected.protect();
     }
 }
 
@@ -447,6 +567,7 @@ fn protect_str() {
     assert_eq!(u.str(), "letmeinplease");
 }
 
+#[cfg(feature = "elements")]
 #[test]
 fn protect_elements() {
     use group::ff::Field;
@@ -469,4 +590,61 @@ fn protect_elements() {
     assert!(gg.is_ok());
     let gg = gg.unwrap();
     assert_eq!(gg, pk);
+}
+
+#[cfg(feature = "secret-key")]
+#[test]
+fn protect_secret_key() {
+    let sk = k256::SecretKey::random(&mut rand::rngs::OsRng);
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::secret_key(&sk);
+    let u = p.unprotect().unwrap();
+    let r = u.secret_key::<k256::Secp256k1>();
+    assert!(r.is_ok());
+    assert_eq!(r.unwrap(), sk);
+}
+
+#[cfg(feature = "signing")]
+#[test]
+fn protect_signing_key() {
+    let sk = ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::signing_key(&sk);
+    let u = p.unprotect().unwrap();
+    let r = u.signing_key::<k256::Secp256k1>();
+    assert!(r.is_ok());
+    assert_eq!(r.unwrap(), sk);
+}
+
+#[cfg(feature = "bls")]
+#[test]
+fn protect_bls_secret_key() {
+    let sk = blsful::Bls12381G1::new_secret_key();
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::bls_secret_key(&sk);
+    let u = p.unprotect().unwrap();
+    let r = u.bls_secret_key::<blsful::Bls12381G1Impl>();
+    assert!(r.is_ok());
+    assert_eq!(r.unwrap(), sk);
+}
+
+#[cfg(feature = "ed25519")]
+#[test]
+fn protect_ed25519() {
+    use rand::Rng;
+
+    let sk = ed25519_dalek::SigningKey::from_bytes(&rand::rngs::OsRng.gen::<[u8; 32]>());
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::ed25519(&sk);
+    let u = p.unprotect().unwrap();
+    let r = u.ed25519();
+    assert!(r.is_ok());
+    assert_eq!(r.unwrap().to_bytes(), sk.to_bytes());
+}
+
+#[cfg(feature = "x25519")]
+#[test]
+fn protect_x25519() {
+    let sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let mut p = Protected::<DEFAULT_BUF_SIZE>::x25519(&sk);
+    let u = p.unprotect().unwrap();
+    let r = u.x25519();
+    assert!(r.is_ok());
+    assert_eq!(r.unwrap().to_bytes(), sk.to_bytes());
 }
