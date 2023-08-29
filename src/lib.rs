@@ -84,6 +84,141 @@ impl<const B: usize> std::fmt::Display for Protected<B> {
     }
 }
 
+impl<const B: usize> From<&[u8]> for Protected<B> {
+    fn from(value: &[u8]) -> Self {
+        Protected::new(value)
+    }
+}
+
+impl<const B: usize> From<Vec<u8>> for Protected<B> {
+    fn from(value: Vec<u8>) -> Self {
+        Protected::new(value.as_slice())
+    }
+}
+
+impl<const B: usize> From<&str> for Protected<B> {
+    fn from(value: &str) -> Self {
+        Protected::str(value)
+    }
+}
+
+impl<const B: usize> From<String> for Protected<B> {
+    fn from(value: String) -> Self {
+        Protected::str(value.as_str())
+    }
+}
+
+macro_rules! from_type_to_protected {
+    ($($type:tt),+$(,)*) => {
+        $(
+            impl<const B: usize> From<$type> for Protected<B> {
+                fn from(value: $type) -> Self {
+                    Protected::$type(value)
+                }
+            }
+        )+
+    };
+}
+
+from_type_to_protected!(u8, i8, u16, i16, u32, i32, u64, i64);
+
+#[cfg(target_pointer_width = "64")]
+from_type_to_protected!(u128, i128);
+
+#[cfg(feature = "secret-key")]
+#[cfg_attr(docrs, doc(cfg(feature = "secret-key")))]
+impl<C: elliptic_curve::Curve, const B: usize> From<elliptic_curve::SecretKey<C>> for Protected<B> {
+    fn from(value: elliptic_curve::SecretKey<C>) -> Protected<B> {
+        Protected::from(&value)
+    }
+}
+
+#[cfg(feature = "secret-key")]
+#[cfg_attr(docrs, doc(cfg(feature = "secret-key")))]
+impl<C: elliptic_curve::Curve, const B: usize> From<&elliptic_curve::SecretKey<C>>
+    for Protected<B>
+{
+    fn from(value: &elliptic_curve::SecretKey<C>) -> Protected<B> {
+        Protected::secret_key(value)
+    }
+}
+
+#[cfg(feature = "signing")]
+#[cfg_attr(docrs, doc(cfg(feature = "signing")))]
+impl<C, const B: usize> From<ecdsa::SigningKey<C>> for Protected<B>
+where
+    C: ecdsa::PrimeCurve + elliptic_curve::CurveArithmetic,
+    elliptic_curve::Scalar<C>: elliptic_curve::ops::Invert<Output = subtle::CtOption<elliptic_curve::Scalar<C>>>
+        + ecdsa::hazmat::SignPrimitive<C>,
+    ecdsa::SignatureSize<C>: elliptic_curve::generic_array::ArrayLength<u8>,
+{
+    fn from(value: ecdsa::SigningKey<C>) -> Protected<B> {
+        Protected::from(&value)
+    }
+}
+
+#[cfg(feature = "signing")]
+#[cfg_attr(docrs, doc(cfg(feature = "signing")))]
+impl<C, const B: usize> From<&ecdsa::SigningKey<C>> for Protected<B>
+where
+    C: ecdsa::PrimeCurve + elliptic_curve::CurveArithmetic,
+    elliptic_curve::Scalar<C>: elliptic_curve::ops::Invert<Output = subtle::CtOption<elliptic_curve::Scalar<C>>>
+        + ecdsa::hazmat::SignPrimitive<C>,
+    ecdsa::SignatureSize<C>: elliptic_curve::generic_array::ArrayLength<u8>,
+{
+    fn from(value: &ecdsa::SigningKey<C>) -> Protected<B> {
+        Protected::signing_key(value)
+    }
+}
+
+#[cfg(feature = "bls")]
+#[cfg_attr(docrs, doc(cfg(feature = "bls")))]
+impl<S: blsful::BlsSignatureImpl, const B: usize> From<blsful::SecretKey<S>> for Protected<B> {
+    fn from(value: blsful::SecretKey<S>) -> Protected<B> {
+        Protected::from(&value)
+    }
+}
+
+#[cfg(feature = "bls")]
+#[cfg_attr(docrs, doc(cfg(feature = "bls")))]
+impl<S: blsful::BlsSignatureImpl, const B: usize> From<&blsful::SecretKey<S>> for Protected<B> {
+    fn from(value: &blsful::SecretKey<S>) -> Protected<B> {
+        Protected::bls_secret_key(value)
+    }
+}
+
+#[cfg(feature = "ed25519")]
+#[cfg_attr(docrs, doc(cfg(feature = "ed25519")))]
+impl<const B: usize> From<ed25519_dalek::SigningKey> for Protected<B> {
+    fn from(value: ed25519_dalek::SigningKey) -> Protected<B> {
+        Protected::from(&value)
+    }
+}
+
+#[cfg(feature = "ed25519")]
+#[cfg_attr(docrs, doc(cfg(feature = "ed25519")))]
+impl<const B: usize> From<&ed25519_dalek::SigningKey> for Protected<B> {
+    fn from(value: &ed25519_dalek::SigningKey) -> Protected<B> {
+        Protected::ed25519(value)
+    }
+}
+
+#[cfg(feature = "x25519")]
+#[cfg_attr(docrs, doc(cfg(feature = "x25519")))]
+impl<const B: usize> From<x25519_dalek::StaticSecret> for Protected<B> {
+    fn from(value: x25519_dalek::StaticSecret) -> Protected<B> {
+        Protected::from(&value)
+    }
+}
+
+#[cfg(feature = "x25519")]
+#[cfg_attr(docrs, doc(cfg(feature = "x25519")))]
+impl<const B: usize> From<&x25519_dalek::StaticSecret> for Protected<B> {
+    fn from(value: &x25519_dalek::StaticSecret) -> Protected<B> {
+        Protected::x25519(value)
+    }
+}
+
 impl<const B: usize> Protected<B> {
     /// Create a new protected memory value
     pub fn new<A: AsRef<[u8]>>(secret: A) -> Self {
@@ -447,25 +582,25 @@ fn protect_slice() {
 
 #[test]
 fn protected_integers() {
-    let mut p: Protected<256> = Protected::u8(8);
+    let mut p: Protected<256> = 8u8.into();
     assert_eq!(p.unprotect().unwrap().u8(), 8);
-    p = Protected::i8(9);
+    p = 9i8.into();
     assert_eq!(p.unprotect().unwrap().i8(), 9);
-    p = Protected::u16(80);
+    p = 80u16.into();
     assert_eq!(p.unprotect().unwrap().u16(), 80);
-    p = Protected::i16(90);
+    p = 90i16.into();
     assert_eq!(p.unprotect().unwrap().i16(), 90);
-    p = Protected::u32(800);
+    p = 800u32.into();
     assert_eq!(p.unprotect().unwrap().u32(), 800);
-    p = Protected::i32(900);
+    p = 900i32.into();
     assert_eq!(p.unprotect().unwrap().i32(), 900);
-    p = Protected::u64(8000);
+    p = 8000u64.into();
     assert_eq!(p.unprotect().unwrap().u64(), 8000);
-    p = Protected::i64(9000);
+    p = 9000i64.into();
     assert_eq!(p.unprotect().unwrap().i64(), 9000);
-    p = Protected::u128(80000);
+    p = 80000u128.into();
     assert_eq!(p.unprotect().unwrap().u128(), 80000);
-    p = Protected::i128(90000);
+    p = 90000i128.into();
     assert_eq!(p.unprotect().unwrap().i128(), 90000);
 }
 
@@ -612,7 +747,7 @@ fn protect_elements() {
 #[test]
 fn protect_secret_key() {
     let sk = k256::SecretKey::random(&mut rand::rngs::OsRng);
-    let mut p = Protected::<DEFAULT_BUF_SIZE>::secret_key(&sk);
+    let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.secret_key::<k256::Secp256k1>();
     assert!(r.is_ok());
@@ -623,7 +758,7 @@ fn protect_secret_key() {
 #[test]
 fn protect_signing_key() {
     let sk = ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
-    let mut p = Protected::<DEFAULT_BUF_SIZE>::signing_key(&sk);
+    let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.signing_key::<k256::Secp256k1>();
     assert!(r.is_ok());
@@ -634,7 +769,7 @@ fn protect_signing_key() {
 #[test]
 fn protect_bls_secret_key() {
     let sk = blsful::Bls12381G1::new_secret_key();
-    let mut p = Protected::<DEFAULT_BUF_SIZE>::bls_secret_key(&sk);
+    let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.bls_secret_key::<blsful::Bls12381G1Impl>();
     assert!(r.is_ok());
@@ -647,7 +782,7 @@ fn protect_ed25519() {
     use rand::Rng;
 
     let sk = ed25519_dalek::SigningKey::from_bytes(&rand::rngs::OsRng.gen::<[u8; 32]>());
-    let mut p = Protected::<DEFAULT_BUF_SIZE>::ed25519(&sk);
+    let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.ed25519();
     assert!(r.is_ok());
@@ -658,7 +793,7 @@ fn protect_ed25519() {
 #[test]
 fn protect_x25519() {
     let sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
-    let mut p = Protected::<DEFAULT_BUF_SIZE>::x25519(&sk);
+    let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.x25519();
     assert!(r.is_ok());
