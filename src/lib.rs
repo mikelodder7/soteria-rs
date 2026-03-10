@@ -24,7 +24,7 @@ use zeroize::Zeroize;
 /// `extern` declarations — no extra crate dependencies required. Failures are
 /// silently ignored so that callers without elevated privileges continue to work.
 mod mem_lock {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use core::ffi::c_void;
 
     #[cfg(unix)]

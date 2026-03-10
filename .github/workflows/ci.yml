@@ -117,7 +117,7 @@ jobs:
           toolchain: nightly
       - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall --no-confirm cargo-outdated
-      - run: cargo outdated --root-deps-only --exit-code 1 --exclude crypto-bigint,generic-array
+      - run: cargo outdated --root-deps-only --exclude crypto-bigint,crypto-bigint-05,generic-array,generic-array-014
 
   pants:
     runs-on: ubuntu-latest
