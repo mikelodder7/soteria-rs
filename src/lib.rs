@@ -8,11 +8,83 @@
 //! The pre_key and nonce are feed into a merlin transcript to mix with other data
 //! and derive the actual encryption key. This value is wiped from memory when the dropped
 //! or decrypted.
+//!
+//! On Unix, the secret's heap buffer is locked via `mlock(2)` to prevent it from
+//! being written to swap. On Linux, `madvise(MADV_DONTDUMP)` is also applied so
+//! the buffer is excluded from core dumps. On Windows, `VirtualLock` is used.
+//! Locking is best-effort: failures (e.g. due to `RLIMIT_MEMLOCK`) are silently ignored.
 #![deny(warnings, missing_docs, dead_code)]
 
 use chacha20poly1305::{aead::AeadInPlace, Key, KeyInit, XChaCha20Poly1305, XNonce};
-use rand::RngCore;
 use zeroize::Zeroize;
+
+/// Platform OS memory-locking helpers.
+///
+/// Uses `mlock`/`munlock` (Unix) or `VirtualLock`/`VirtualUnlock` (Windows) via
+/// `extern` declarations — no extra crate dependencies required. Failures are
+/// silently ignored so that callers without elevated privileges continue to work.
+mod mem_lock {
+    #[cfg(unix)]
+    use core::ffi::c_void;
+
+    #[cfg(unix)]
+    extern "C" {
+        fn mlock(addr: *const c_void, len: usize) -> i32;
+        fn munlock(addr: *const c_void, len: usize) -> i32;
+    }
+
+    #[cfg(all(unix, target_os = "linux"))]
+    extern "C" {
+        fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+    }
+
+    /// `MADV_DONTDUMP` — exclude region from core dumps (Linux only).
+    #[cfg(all(unix, target_os = "linux"))]
+    const MADV_DONTDUMP: i32 = 16;
+
+    #[cfg(windows)]
+    extern "system" {
+        fn VirtualLock(lpAddress: *const c_void, dwSize: usize) -> i32;
+        fn VirtualUnlock(lpAddress: *const c_void, dwSize: usize) -> i32;
+    }
+
+    /// Lock `len` bytes starting at `ptr` into physical RAM and, on Linux,
+    /// exclude them from core dumps. No-op if `len` is zero or on unsupported platforms.
+    pub(super) fn lock(ptr: *const u8, len: usize) {
+        if len == 0 {
+            return;
+        }
+        #[cfg(unix)]
+        // SAFETY: ptr is valid for `len` bytes (callers guarantee this).
+        unsafe {
+            let _ = mlock(ptr.cast(), len);
+            #[cfg(target_os = "linux")]
+            let _ = madvise(ptr as *mut c_void, len, MADV_DONTDUMP);
+        }
+        #[cfg(windows)]
+        // SAFETY: ptr is valid for `len` bytes (callers guarantee this).
+        unsafe {
+            let _ = VirtualLock(ptr.cast(), len);
+        }
+    }
+
+    /// Unlock memory previously locked by [`lock`]. No-op if `len` is zero or on unsupported platforms.
+    pub(super) fn unlock(ptr: *const u8, len: usize) {
+        if len == 0 {
+            return;
+        }
+        #[cfg(unix)]
+        // SAFETY: ptr is valid for `len` bytes (callers guarantee this).
+        unsafe {
+            let _ = munlock(ptr.cast(), len);
+        }
+        #[cfg(windows)]
+        // SAFETY: ptr is valid for `len` bytes (callers guarantee this).
+        unsafe {
+            let _ = VirtualUnlock(ptr.cast(), len);
+        }
+    }
+}
 
 /// The default BUFFER size for the prekey and nonce in memory.
 /// This is large enough to inhibit speculation and side-channel attacks.
@@ -67,8 +139,10 @@ impl<const B: usize> Default for Protected<B> {
 
 impl<const B: usize> Drop for Protected<B> {
     fn drop(&mut self) {
+        mem_lock::unlock(self.value.as_ptr(), self.value.capacity());
         self.pre_key.zeroize();
         self.nonce.zeroize();
+        self.value.zeroize();
     }
 }
 
@@ -92,7 +166,7 @@ impl<const B: usize> From<&[u8]> for Protected<B> {
 
 impl<const B: usize> From<Vec<u8>> for Protected<B> {
     fn from(value: Vec<u8>) -> Self {
-        Protected::new(value.as_slice())
+        Protected::new(&value)
     }
 }
 
@@ -110,7 +184,7 @@ impl<const B: usize> From<String> for Protected<B> {
 
 impl<const B: usize, const N: usize> From<[u8; N]> for Protected<B> {
     fn from(value: [u8; N]) -> Self {
-        Protected::new(value.as_slice())
+        Protected::new(value)
     }
 }
 
@@ -140,7 +214,7 @@ impl<const B: usize> From<&std::ffi::OsStr> for Protected<B> {
 
 impl<const B: usize> From<std::ffi::OsString> for Protected<B> {
     fn from(value: std::ffi::OsString) -> Self {
-        Protected::new(value.into_encoded_bytes().as_slice())
+        Protected::new(value.into_encoded_bytes())
     }
 }
 
@@ -382,12 +456,12 @@ impl<const B: usize> Protected<B> {
 
     /// Create a new protected memory value from a fixed-length byte array
     pub fn array<const N: usize>(value: [u8; N]) -> Self {
-        Self::new(value.as_slice())
+        Self::new(value)
     }
 
     /// Create a new protected memory value from a boxed byte slice
     pub fn boxed(value: Box<[u8]>) -> Self {
-        Self::new(value.as_ref())
+        Self::new(&value)
     }
 
     #[cfg(feature = "generic-array-014")]
@@ -506,18 +580,22 @@ impl<const B: usize> Protected<B> {
     /// Serialize a secret into protected memory
     pub fn serde<T: serde::Serialize>(secret: &T) -> Result<Self, Box<dyn std::error::Error>> {
         let s = postcard::to_stdvec(secret).map_err(|e| string_error::into_err(e.to_string()))?;
-        Ok(Self::new(s.as_slice()))
+        Ok(Self::new(s))
     }
 
-    fn protect(&mut self) {
-        let mut rng = rand::rngs::OsRng {};
-        rng.fill_bytes(&mut self.pre_key);
-        rng.fill_bytes(&mut self.nonce);
+    fn derive_seal_key(&self) -> [u8; 64] {
         let mut transcript = merlin::Transcript::new(b"protect memory region");
         transcript.append_message(b"pre_key", &self.pre_key);
         transcript.append_message(b"nonce", &self.nonce);
         let mut output = [0u8; 64];
         transcript.challenge_bytes(b"seal_data", &mut output);
+        output
+    }
+
+    fn protect(&mut self) {
+        getrandom::fill(&mut self.pre_key).expect("OS RNG failed");
+        getrandom::fill(&mut self.nonce).expect("OS RNG failed");
+        let mut output = self.derive_seal_key();
         let seal_key = Key::from_slice(&output[..32]);
         let nonce = XNonce::from_slice(&output[32..56]);
         let cipher = XChaCha20Poly1305::new(seal_key);
@@ -528,31 +606,26 @@ impl<const B: usize> Protected<B> {
             .encrypt_in_place(nonce, &aad, &mut self.value)
             .unwrap();
         output.zeroize();
+        // Lock the ciphertext buffer into RAM after every (re-)encryption.
+        // mlock is idempotent on already-locked pages, so repeated calls are safe.
+        mem_lock::lock(self.value.as_ptr(), self.value.capacity());
     }
 
     /// Unprotect memory value. If the value has been tampered, [`None`] is returned.
     /// Otherwise the value is decrypted and return via [`Some`]
     pub fn unprotect(&mut self) -> Option<Unprotected<'_, B>> {
-        let mut transcript = merlin::Transcript::new(b"protect memory region");
-        transcript.append_message(b"pre_key", &self.pre_key);
-        transcript.append_message(b"nonce", &self.nonce);
-        let mut output = [0u8; 64];
-        transcript.challenge_bytes(b"seal_data", &mut output);
+        let output = self.derive_seal_key();
         let seal_key = Key::from_slice(&output[..32]);
         let nonce = XNonce::from_slice(&output[32..56]);
         let cipher = XChaCha20Poly1305::new(seal_key);
         let mut aad = Vec::with_capacity(2 * B);
         aad.extend_from_slice(&self.pre_key);
         aad.extend_from_slice(&self.nonce);
-        match cipher.decrypt_in_place(nonce, &aad, &mut self.value) {
-            Err(_) => None,
-            Ok(_) => {
-                self.pre_key.zeroize();
-                self.nonce.zeroize();
-                aad.zeroize();
-                Some(Unprotected { protected: self })
-            }
-        }
+        cipher.decrypt_in_place(nonce, &aad, &mut self.value).ok()?;
+        self.pre_key.zeroize();
+        self.nonce.zeroize();
+        aad.zeroize();
+        Some(Unprotected { protected: self })
     }
 }
 
@@ -687,7 +760,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     pub fn generic_array_014<N: generic_array_014::ArrayLength<u8>>(
         &self,
     ) -> generic_array_014::GenericArray<u8, N> {
-        generic_array_014::GenericArray::from_exact_iter(self.as_ref().iter().cloned())
+        generic_array_014::GenericArray::from_exact_iter(self.as_ref().iter().copied())
             .expect("protected value length does not match GenericArray size")
     }
 
@@ -697,7 +770,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     pub fn try_generic_array_014<N: generic_array_014::ArrayLength<u8>>(
         &self,
     ) -> Result<generic_array_014::GenericArray<u8, N>, Box<dyn std::error::Error>> {
-        generic_array_014::GenericArray::from_exact_iter(self.as_ref().iter().cloned()).ok_or_else(
+        generic_array_014::GenericArray::from_exact_iter(self.as_ref().iter().copied()).ok_or_else(
             || std::io::Error::new(std::io::ErrorKind::InvalidInput, "length mismatch").into(),
         )
     }
@@ -709,7 +782,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     pub fn generic_array<N: generic_array::ArrayLength>(
         &self,
     ) -> generic_array::GenericArray<u8, N> {
-        generic_array::GenericArray::try_from_iter(self.as_ref().iter().cloned())
+        generic_array::GenericArray::try_from_iter(self.as_ref().iter().copied())
             .expect("protected value length does not match GenericArray size")
     }
 
@@ -719,7 +792,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     pub fn try_generic_array<N: generic_array::ArrayLength>(
         &self,
     ) -> Result<generic_array::GenericArray<u8, N>, Box<dyn std::error::Error>> {
-        generic_array::GenericArray::try_from_iter(self.as_ref().iter().cloned()).map_err(|_| {
+        generic_array::GenericArray::try_from_iter(self.as_ref().iter().copied()).map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "length mismatch").into()
         })
     }
@@ -729,7 +802,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     /// Return the protected secret as a [`hybrid_array::Array`].
     /// Panics if the secret length does not match the array size.
     pub fn hybrid_array<N: hybrid_array::ArraySize>(&self) -> hybrid_array::Array<u8, N> {
-        hybrid_array::Array::try_from_iter(self.as_ref().iter().cloned())
+        hybrid_array::Array::try_from_iter(self.as_ref().iter().copied())
             .expect("protected value length does not match Array size")
     }
 
@@ -739,7 +812,7 @@ impl<'a, const B: usize> Unprotected<'a, B> {
     pub fn try_hybrid_array<N: hybrid_array::ArraySize>(
         &self,
     ) -> Result<hybrid_array::Array<u8, N>, Box<dyn std::error::Error>> {
-        hybrid_array::Array::try_from_iter(self.as_ref().iter().cloned()).map_err(|_| {
+        hybrid_array::Array::try_from_iter(self.as_ref().iter().copied()).map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "length mismatch").into()
         })
     }
@@ -1075,7 +1148,7 @@ fn protect_str() {
 fn protect_elements() {
     use group::ff::Field;
 
-    let sk = k256::Scalar::random(&mut rand::rngs::OsRng);
+    let sk = k256::Scalar::random(&mut rand_core::OsRng);
     let pk = k256::ProjectivePoint::GENERATOR * sk;
 
     let mut p = Protected::<DEFAULT_BUF_SIZE>::field_element(sk);
@@ -1098,7 +1171,7 @@ fn protect_elements() {
 #[cfg(feature = "secret-key")]
 #[test]
 fn protect_secret_key() {
-    let sk = k256::SecretKey::random(&mut rand::rngs::OsRng);
+    let sk = k256::SecretKey::random(&mut rand_core::OsRng);
     let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.secret_key::<k256::Secp256k1>();
@@ -1109,7 +1182,7 @@ fn protect_secret_key() {
 #[cfg(feature = "signing")]
 #[test]
 fn protect_signing_key() {
-    let sk = ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+    let sk = ecdsa::SigningKey::random(&mut rand_core::OsRng);
     let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.signing_key::<k256::Secp256k1>();
@@ -1131,9 +1204,10 @@ fn protect_bls_secret_key() {
 #[cfg(feature = "ed25519")]
 #[test]
 fn protect_ed25519() {
-    use rand::Rng;
-
-    let sk = ed25519_dalek::SigningKey::from_bytes(&rand::rngs::OsRng.r#gen::<[u8; 32]>());
+    use rand_core::RngCore;
+    let mut bytes = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    let sk = ed25519_dalek::SigningKey::from_bytes(&bytes);
     let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.ed25519();
@@ -1144,7 +1218,7 @@ fn protect_ed25519() {
 #[cfg(feature = "x25519")]
 #[test]
 fn protect_x25519() {
-    let sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let sk = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
     let mut p: Protected<DEFAULT_BUF_SIZE> = (&sk).into();
     let u = p.unprotect().unwrap();
     let r = u.x25519();
