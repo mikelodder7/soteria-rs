@@ -3,51 +3,52 @@ authors = ["Mike Lodder <redmike7@gmail.com>"]
 categories = ["cryptography"]
 description = "Wrapper around a secret that is stored in memory with the goal to protect against side-channel and speculative attacks."
 documentation = "https://docs.rs/soteria-rs"
-edition = "2021"
+edition = "2024"
+rust-version = "1.87"
 homepage = "https://github.com/mikelodder7/soteria-rs"
 keywords = ["cryptography", "memory", "protection", "secure"]
 license = "MIT OR Apache-2.0"
 name = "soteria-rs"
 readme = "README.md"
 repository = "https://github.com/mikelodder7/soteria-rs"
-version = "0.5.0"
+version = "0.6.0"
 
 [features]
-default = []
-bls = ["blsful", "string-error"]
+default = ["kernel-keyring"]
+kernel-keyring = []
+bls = ["blsful"]
 crypto-bigint = ["dep:crypto-bigint"]
-crypto-bigint-05 = ["dep:crypto-bigint-05"]
-ed25519 = ["ed25519-dalek", "string-error"]
-elements = ["dep:group", "string-error"]
-generic-array = ["dep:generic-array"]
-generic-array-014 = ["dep:generic-array-014"]
+ed25519 = ["ed25519-dalek"]
+elements = ["dep:group"]
 hybrid-array = ["dep:hybrid-array"]
-secret-key = ["elliptic-curve", "string-error"]
-serde = ["dep:serde", "postcard", "string-error"]
-signing = ["ecdsa", "elliptic-curve", "subtle", "string-error"]
-x25519 = ["string-error", "x25519-dalek"]
+secret-key = ["elliptic-curve"]
+serde = ["dep:serde", "postcard"]
+signing = ["ecdsa", "elliptic-curve"]
+x25519 = ["x25519-dalek"]
 
 [dependencies]
-blsful = { version = "3.1", optional = true }
-chacha20poly1305 = "0.10"
+blsful = { version = "4.2", optional = true }
+chacha20poly1305 = "0.11"
 crypto-bigint = { version = "0.7", features = ["hybrid-array"], optional = true }
-crypto-bigint-05 = { version = "0.5", features = ["generic-array"], optional = true, package = "crypto-bigint" }
-ed25519-dalek = { version = "2", optional = true }
-elliptic-curve = { version = "0.13", optional = true }
-ecdsa = { version = "0.16", features = ["arithmetic", "hazmat", "signing"], optional = true }
-generic-array = { version = "1", optional = true }
-generic-array-014 = { version = "0.14", optional = true, package = "generic-array" }
-group = { version = "0.13", optional = true }
+ed25519-dalek = { version = "3", optional = true }
+elliptic-curve = { version = "0.14", optional = true }
+ecdsa = { version = "0.17", features = ["algorithm"], optional = true }
+group = { version = "0.14", optional = true }
 hybrid-array = { version = "0.4", optional = true }
 getrandom = "0.4"
 merlin = "3"
 serde = { version = "1", optional = true }
 postcard = { version = "1", optional = true, features = ["use-std"] }
-subtle = { version = "2", optional = true }
-string-error = { version = "0.1.0", optional = true }
-x25519-dalek = { version = "2.0.0", features = ["static_secrets"], optional = true }
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"], optional = true }
 zeroize = "1"
+thiserror = "2"
 
 [dev-dependencies]
-k256 = { version = "0.13", features = ["ecdsa"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+k256 = { version = "0.14", features = ["ecdsa"] }
+rand_core = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_cbor_2 = "0.13"
+serde_json = "1"
+toml = "1"
+yaml_serde = "0.10"

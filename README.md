@@ -27,24 +27,49 @@ Secrets can be made using the `Protected` struct
 ```rust
 use soteria_rs::*;
 
-let mut protected = Protected::new(b"top secret");
+let password = b"top secret";
+let mut p = Protected::<DEFAULT_BUF_SIZE>::new(password)?;
 
-assert_ne!(p.value, password);
-assert_eq!(p.value.len(), password.len() + 16);
-assert_ne!(p.pre_key, [0u8; DEFAULT_BUF_SIZE]);
-assert_ne!(p.nonce, [0u8; DEFAULT_BUF_SIZE]);
-
-let password2 = p.unprotect();
-assert!(password2.is_some());
-assert_eq!(password2.unwrap().as_ref(), password.as_slice());
-
-let str_pass = password2.str();
-assert_eq!("top secret", str_pass);
+let unprotected = p.unprotect().ok_or(Error::Invalid("tampered value"))?;
+assert_eq!(unprotected.as_ref(), password.as_slice());
+assert_eq!(unprotected.str()?, "top secret");
 ```
 
-`Protected` provides convenience methods to wrap many types of secrets from strings, byte slices, and serializable types.
+Every constructor and conversion returns `Result<_, soteria_rs::Error>`; nothing in
+the library panics.
+
+`Protected` provides convenience methods (and `TryFrom` impls) to wrap many types of secrets from strings, byte slices, integers, keys, and serializable types.
 
 Use the `serde` feature to enable serialization to and from a protected type.
+
+## Linux kernel keyring (on by default)
+
+On Linux (x86_64, x86, aarch64, riscv64, loongarch64), the default `kernel-keyring`
+feature stores one random per-process key in the kernel's process keyring and mixes
+it into every sealing key. Nothing needs to be called to enable it. With it, reading
+the process's memory alone (a core dump, swap, a memory-disclosure bug, Rowhammer or
+RAMBleed) is no longer enough to unseal a secret; an attacker also has to run code as
+the same user.
+
+It never weakens protection. If the keyring can't be used (for example, `keyctl` is
+blocked with an error by a seccomp profile, as Docker's can be), soteria falls back to
+the in-memory keys only, which is exactly the behavior without the feature. Other
+operating systems never use it.
+
+What it costs:
+
+* One extra background thread per process, named `soteria-keyring`, which keeps the
+  key alive for the life of the process.
+* One extra syscall each time a value is sealed or unsealed.
+
+**Turn it off if your process runs under a seccomp filter that kills on unknown
+syscalls** (for example systemd's `SystemCallFilter=` without `add_key`/`keyctl`
+allowed). Such a filter terminates the process with `SIGSYS` instead of letting the
+fallback run. To opt out:
+
+```toml
+soteria-rs = { version = "0.6", default-features = false }
+```
 
 ## License
 
